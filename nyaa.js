@@ -42,7 +42,7 @@ class Nyaa {
         const allTitles = (titles ?? []).map((t) => t.trim()).filter(Boolean);
         const synonyms = (media?.synonyms ?? []).map((s) => s.trim()).filter(Boolean);
 
-        // Build primary title list
+        // Build primary title list: first title, first synonym, then up to 3 random others
         const primaryTitles = [];
         if (allTitles[0]) primaryTitles.push(allTitles[0]);
         if (synonyms[0] && !primaryTitles.includes(synonyms[0])) primaryTitles.push(synonyms[0]);
@@ -58,14 +58,18 @@ class Nyaa {
 
         console.log(`[Nyaa] Searching with ${primaryTitles.length} titles`);
 
-        let allResults = [];
+        // 1. Get English title from AniList (for dual audio search)
+        const fetchFn = query.fetch || globalThis.fetch;
+        const englishTitle = await this.#fetchEnglishTitle(query.anilistId, fetchFn);
+        console.log(`[Nyaa] English title: "${englishTitle || "(none)"}"`);
 
-        // 1. Primary search — normal results
+        // 2. Primary search — normal results with episode number
+        let allResults = [];
         for (let i = 0; i < primaryTitles.length; i++) {
             const title = primaryTitles[i];
             if (!title) continue;
             try {
-                const results = await this.#search(title, episode);
+                const results = await this.#search(title, episode, fetchFn);
                 if (results.length > 0) {
                     allResults = results;
                     break;
@@ -78,9 +82,12 @@ class Nyaa {
             }
         }
 
-        // 2. Dual audio search — fetch English title, search without episode, filter strictly
-        const dualResults = await this.#searchDualAudio(query, allTitles, synonyms, episode);
+        // 3. Dual audio search — use English title, no episode in query, strict filter after
+        const dualResults = await this.#searchDualAudio(
+            englishTitle, primaryTitles, synonyms, episode, fetchFn
+        );
         if (dualResults.length > 0) {
+            console.log(`[Nyaa] Found ${dualResults.length} dual audio releases`);
             allResults.push(...dualResults);
         }
 
@@ -88,22 +95,20 @@ class Nyaa {
             return this.#deduplicateAndSort(allResults);
         }
 
-        // 3. Fallback — try other title variants
+        // 4. Fallback
         console.log(`[Nyaa] No results. Trying fallback...`);
         const fallbackCandidates = [...allTitles.slice(1), ...synonyms.slice(1)].filter(
             (t) => t && !primaryTitles.includes(t),
         );
         const shuffled = fallbackCandidates.sort(() => Math.random() - 0.5);
-        const fallbackTitles = shuffled.slice(0, 5);
-
-        for (let i = 0; i < fallbackTitles.length; i++) {
+        for (let i = 0; i < Math.min(shuffled.length, 5); i++) {
             try {
-                const results = await this.#search(fallbackTitles[i], episode);
+                const results = await this.#search(shuffled[i], episode, fetchFn);
                 if (results.length > 0) allResults.push(...results);
             } catch (err) {
                 console.error(`[Nyaa] Fallback failed:`, err.message);
             }
-            if (i < fallbackTitles.length - 1) {
+            if (i < Math.min(shuffled.length, 5) - 1) {
                 await new Promise((r) => setTimeout(r, this.#delayMs));
             }
         }
@@ -122,47 +127,46 @@ class Nyaa {
 
     /**
      * Fetch English title from AniList
+     * @param {number} anilistId
+     * @param {typeof fetch} fetchFn
+     * @returns {Promise<string>}
      */
-    async #fetchEnglishTitle(anilistId) {
-        const gql = `query ($id: Int) { Media(id: $id, type: ANIME) { title { english } } }`;
-        const res = await fetch("https://graphql.anilist.co", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: gql, variables: { id: anilistId } }),
-        });
-        if (!res.ok) return "";
-        const data = await res.json();
-        return data?.data?.Media?.title?.english || "";
+    async #fetchEnglishTitle(anilistId, fetchFn) {
+        if (!anilistId) return "";
+        try {
+            const gql = `query ($id: Int) { Media(id: $id, type: ANIME) { title { english } } }`;
+            const res = await fetchFn("https://graphql.anilist.co", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: gql, variables: { id: anilistId } }),
+            });
+            if (!res.ok) return "";
+            const data = await res.json();
+            return data?.data?.Media?.title?.english || "";
+        } catch (ex) {
+            console.error(`[Nyaa] AniList fetch failed:`, ex.message);
+            return "";
+        }
     }
 
     /**
      * Search for dual audio releases.
-     * Searches without episode number (uploaders use SXXEXX format),
-     * then filters strictly by anime name + episode.
+     * Key insight: dual audio uploaders use English titles + SXXEXX format.
+     * We search without episode number, then filter strictly.
      */
-    async #searchDualAudio(query, allTitles, synonyms, episode) {
-        // Get English title from AniList
-        const anilistId = query.anilistId || query.media?.id;
-        let englishTitle = "";
-        if (anilistId) {
-            try {
-                englishTitle = await this.#fetchEnglishTitle(anilistId);
-            } catch (ex) {
-                console.error(`[Nyaa] AniList fetch failed:`, ex.message);
-            }
-        }
-
-        // Build search query: English title or short romaji + "Dual Audio"
-        const baseTitle = allTitles[0] || synonyms[0] || "";
+    async #searchDualAudio(englishTitle, primaryTitles, synonyms, episode, fetchFn) {
+        // Build the search title — prefer English, fallback to short romaji
+        const baseTitle = primaryTitles[0] || synonyms[0] || "";
         const shortRomaji = baseTitle.split(/[:\-–—]/)[0].trim();
-        const searchTitle = englishTitle || (shortRomaji.length >= 3 ? shortRomaji : baseTitle);
-
+        const searchTitle = englishTitle || (shortRomaji.length >= 3 ? shortRomaji : "");
         if (!searchTitle) return [];
+
+        console.log(`[Nyaa] Dual audio search: "${searchTitle} Dual Audio"`);
 
         await new Promise((r) => setTimeout(r, this.#delayMs));
         let raw;
         try {
-            raw = await this.#search(searchTitle + " Dual Audio", null, false);
+            raw = await this.#search(searchTitle + " Dual Audio", null, fetchFn);
         } catch (ex) {
             console.error(`[Nyaa] Dual audio search failed:`, ex.message);
             return [];
@@ -170,16 +174,17 @@ class Nyaa {
 
         if (!raw.length) return [];
 
-        // Build keywords that must match (all title variants, before colon/dash)
+        // Build anime name keywords (before colon/dash, lowercase)
         const keywords = [
             ...(englishTitle ? [englishTitle.toLowerCase()] : []),
-            ...allTitles.map((t) => t.toLowerCase().split(/[:\-–—]/)[0].trim()),
+            ...primaryTitles.map((t) => t.toLowerCase().split(/[:\-–—]/)[0].trim()),
             ...synonyms.map((s) => s.toLowerCase().split(/[:\-–—]/)[0].trim()),
         ].filter((k) => k && k.length >= 3);
 
-        // Strict episode matching: SXXEXX or EXX only (no loose "- 03" matches)
-        const epStr = episode != null ? String(episode) : null;
-        const epPadded = epStr ? epStr.padStart(2, "0") : null;
+        console.log(`[Nyaa] Dual audio keywords:`, keywords);
+
+        // Strict episode filter: SXXEXX or EXX only
+        const epPadded = episode != null ? String(episode).padStart(2, "0") : null;
         const epRegex = epPadded
             ? new RegExp(`(?:S\\d+E${epPadded}|\\bE${epPadded}\\b)`, "i")
             : null;
@@ -188,11 +193,10 @@ class Nyaa {
             const t = item.title.toLowerCase();
 
             // Must match anime name
-            const matchesAnime = keywords.some((kw) => t.includes(kw));
-            if (!matchesAnime) return false;
+            if (!keywords.some((kw) => t.includes(kw))) return false;
 
-            // Must match episode if provided
-            if (epRegex) return epRegex.test(item.title);
+            // Must match exact episode
+            if (epRegex && !epRegex.test(item.title)) return false;
 
             return true;
         });
@@ -200,13 +204,17 @@ class Nyaa {
 
     /**
      * Core nyaa.si RSS search
+     * @param {string} title
+     * @param {string|number|null} episode
+     * @param {typeof fetch} fetchFn
      */
-    async #search(title, episode) {
+    async #search(title, episode, fetchFn) {
         let q = title.replace(/[^\w\s-]/g, " ").trim();
         if (episode) q += ` ${episode.toString().padStart(2, "0")}`;
 
         const url = this.#base + encodeURIComponent(q);
-        const res = await fetch(url);
+        console.log(`[Nyaa] RSS: ${q}`);
+        const res = await fetchFn(url);
         const xml = await res.text();
 
         /** @type {TorrentResult[]} */
@@ -305,7 +313,8 @@ class Nyaa {
     #deduplicateAndSort(results) {
         const seen = new Map();
         for (const item of results) {
-            if (!seen.has(item.hash) || this.#qualityScore(item) > this.#qualityScore(seen.get(item.hash))) {
+            const existing = seen.get(item.hash);
+            if (!existing || this.#qualityScore(item) > this.#qualityScore(existing)) {
                 seen.set(item.hash, item);
             }
         }
@@ -318,7 +327,6 @@ class Nyaa {
         else if (item.type === "batch") score += 500;
         if (item.seeders > 50) score += 300;
         if (item.seeders > 20) score += 100;
-        // Dual audio gets a small bump — just enough to break ties, not override relevance
         if (item.dualAudio) score += 50;
         return score;
     }
