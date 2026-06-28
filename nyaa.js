@@ -126,24 +126,21 @@ class Nyaa {
             }
         }
 
-        const dualAudioVariants = [];
-        if (englishTitle) {
-            dualAudioVariants.push(englishTitle);
-        }
-
-        // Also try shorter versions of the romaji title
+        // Build search variants: English title first, then short romaji
         const baseTitle = allTitles[0] || synonyms[0] || "";
-        dualAudioVariants.push(
-            baseTitle.split(/[:\-–—]/)[0].trim(),
-            baseTitle.split(/\s+/).slice(0, 2).join(" "),
-        );
-
-        // Also try synonyms
-        for (const syn of synonyms.slice(0, 2)) {
-            if (syn && !dualAudioVariants.includes(syn)) {
-                dualAudioVariants.push(syn);
-            }
+        const dualAudioVariants = [];
+        if (englishTitle) dualAudioVariants.push(englishTitle);
+        const shortRomaji = baseTitle.split(/[:\-–—]/)[0].trim();
+        if (shortRomaji && shortRomaji.length >= 3 && !dualAudioVariants.includes(shortRomaji)) {
+            dualAudioVariants.push(shortRomaji);
         }
+
+        // Keywords that MUST appear in the result title to be considered relevant
+        const matchKeywords = [
+            ...(englishTitle ? [englishTitle.toLowerCase()] : []),
+            ...allTitles.map(t => t.toLowerCase().split(/[:\-–—]/)[0].trim()),
+            ...synonyms.map(s => s.toLowerCase().split(/[:\-–—]/)[0].trim()),
+        ].filter(k => k && k.length >= 3);
 
         for (const variant of dualAudioVariants) {
             if (!variant || variant.length < 3) continue;
@@ -154,8 +151,13 @@ class Nyaa {
                     episode,
                     options,
                 );
-                if (dualResults.length > 0) {
-                    allResults.push(...dualResults);
+                // Only keep results that actually match this anime
+                const filtered = dualResults.filter(item => {
+                    const t = item.title.toLowerCase();
+                    return matchKeywords.some(kw => t.includes(kw));
+                });
+                if (filtered.length > 0) {
+                    allResults.push(...filtered);
                 }
             } catch (ex) {
                 console.error(
@@ -438,7 +440,7 @@ class Nyaa {
             /jpn?\+eng/i.test(item.title) ||
             /japanese\s*\+?\s*english/i.test(item.title)
         ) {
-            score += 1500;
+            score += 500;
         }
 
         return score;
