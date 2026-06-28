@@ -114,7 +114,11 @@ class Nyaa {
         }
 
         // Secondary search: specifically look for dual audio releases
-        const dualAudioQuery = allTitles[0] || synonyms[0] || "";
+        // Use a shorter title (before colon/dash) since dual audio uploaders
+        // often drop subtitles and use SXXEXX format
+        const dualAudioQuery = (allTitles[0] || synonyms[0] || "")
+            .split(/[:\-–—]/)[0]
+            .trim();
         if (dualAudioQuery) {
             await new Promise((r) => setTimeout(r, this.#delayMs));
             try {
