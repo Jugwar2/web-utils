@@ -113,17 +113,28 @@ class Nyaa {
             }
         }
 
-        // Secondary search: specifically look for dual audio releases
-        // Use a shorter title (before colon/dash) since dual audio uploaders
-        // often drop subtitles and use SXXEXX format
-        const dualAudioQuery = (allTitles[0] || synonyms[0] || "")
-            .split(/[:\-–—]/)[0]
-            .trim();
-        if (dualAudioQuery) {
+        // Secondary search: look for dual audio releases
+        // Dual audio uploaders use shorter titles (e.g. "Jujutsu Kaisen" not "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen")
+        const baseTitle = allTitles[0] || synonyms[0] || "";
+        const dualAudioVariants = [
+            baseTitle.split(/[:\-–—]/)[0].trim(),  // before colon/dash
+            baseTitle.split(/\s+/).slice(0, 2).join(" "),  // first 2 words
+            baseTitle.split(/\s+/).slice(0, 3).join(" "),  // first 3 words
+        ];
+
+        // Also try synonyms that might be shorter
+        for (const syn of synonyms.slice(0, 2)) {
+            if (syn && !dualAudioVariants.includes(syn)) {
+                dualAudioVariants.push(syn);
+            }
+        }
+
+        for (const variant of dualAudioVariants) {
+            if (!variant || variant.length < 3) continue;
             await new Promise((r) => setTimeout(r, this.#delayMs));
             try {
                 const dualResults = await this.#search(
-                    dualAudioQuery + " Dual Audio",
+                    variant + " Dual Audio",
                     episode,
                     options,
                 );
@@ -132,7 +143,7 @@ class Nyaa {
                 }
             } catch (ex) {
                 console.error(
-                    `[Nyaa] Dual audio search failed:`,
+                    `[Nyaa] Dual audio search failed for "${variant}":`,
                     ex.message,
                 );
             }
