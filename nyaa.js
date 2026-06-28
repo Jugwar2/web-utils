@@ -369,7 +369,7 @@ class Nyaa {
             /jpn?\+eng/i.test(item.title) ||
             /japanese\s*\+?\s*english/i.test(item.title)
         ) {
-            score += 200;
+            score += 1500;
         }
 
         return score;
