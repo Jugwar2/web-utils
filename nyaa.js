@@ -114,15 +114,31 @@ class Nyaa {
         }
 
         // Secondary search: look for dual audio releases
-        // Dual audio uploaders use shorter titles (e.g. "Jujutsu Kaisen" not "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen")
-        const baseTitle = allTitles[0] || synonyms[0] || "";
-        const dualAudioVariants = [
-            baseTitle.split(/[:\-–—]/)[0].trim(),  // before colon/dash
-            baseTitle.split(/\s+/).slice(0, 2).join(" "),  // first 2 words
-            baseTitle.split(/\s+/).slice(0, 3).join(" "),  // first 3 words
-        ];
+        // Dual audio uploaders use English titles, not romaji
+        // Fetch English title from AniList if we have the ID
+        let englishTitle = "";
+        const anilistId = query.anilistId || query.media?.id;
+        if (anilistId) {
+            try {
+                englishTitle = await this.#fetchEnglishTitle(anilistId);
+            } catch (ex) {
+                console.error(`[Nyaa] Failed to fetch English title:`, ex.message);
+            }
+        }
 
-        // Also try synonyms that might be shorter
+        const dualAudioVariants = [];
+        if (englishTitle) {
+            dualAudioVariants.push(englishTitle);
+        }
+
+        // Also try shorter versions of the romaji title
+        const baseTitle = allTitles[0] || synonyms[0] || "";
+        dualAudioVariants.push(
+            baseTitle.split(/[:\-–—]/)[0].trim(),
+            baseTitle.split(/\s+/).slice(0, 2).join(" "),
+        );
+
+        // Also try synonyms
         for (const syn of synonyms.slice(0, 2)) {
             if (syn && !dualAudioVariants.includes(syn)) {
                 dualAudioVariants.push(syn);
@@ -206,6 +222,23 @@ class Nyaa {
     async test() {
         const res = await fetch(this.#base + "one%20piece", { method: "HEAD" });
         return res.ok;
+    }
+
+    /**
+     * Fetch the English title from AniList using GraphQL
+     * @param {number} anilistId
+     * @returns {Promise<string>}
+     */
+    async #fetchEnglishTitle(anilistId) {
+        const query = `query ($id: Int) { Media(id: $id, type: ANIME) { title { english romaji } } }`;
+        const res = await fetch("https://graphql.anilist.co", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, variables: { id: anilistId } }),
+        });
+        if (!res.ok) return "";
+        const data = await res.json();
+        return data?.data?.Media?.title?.english || "";
     }
 
     /**
