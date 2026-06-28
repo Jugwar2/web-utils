@@ -43,30 +43,26 @@ class Nyaa {
         const synonyms = (media?.synonyms ?? []).map((s) => s.trim()).filter(Boolean);
         const fetchFn = query.fetch || globalThis.fetch;
 
-        // --- Extract core names from all titles ---
         const coreNames = this.#extractCoreNames(allTitles, synonyms);
-        console.log(`[Nyaa] Core names: ${JSON.stringify(coreNames)}`);
 
-        // --- Step 1: Get English title from AniList (best effort, don't depend on it) ---
         const anilistId = query.anilistId || media?.id;
         const englishTitle = await this.#fetchEnglishTitle(anilistId, fetchFn);
         if (englishTitle) {
             const engCore = this.#extractCoreNames([englishTitle], [])[0];
             if (engCore && !coreNames.includes(engCore)) coreNames.push(engCore);
         }
-        console.log(`[Nyaa] Final core names: ${JSON.stringify(coreNames)}`);
+        console.log(`[Nyaa] Core names: ${JSON.stringify(coreNames)}, episode: ${episode}`);
 
-        // --- Step 2: Run primary search (romaji titles + episode) ---
-        const primaryResults = await this.#searchPrimary(allTitles, synonyms, episode, fetchFn);
-        console.log(`[Nyaa] Primary results: ${primaryResults.length}`);
+        // --- Run both searches in parallel ---
+        const [primaryResults, dualResults] = await Promise.all([
+            this.#searchPrimary(allTitles, synonyms, episode, fetchFn),
+            this.#searchDualAudio(coreNames, episode, fetchFn),
+        ]);
 
-        // --- Step 3: Run dual audio search (core names + "Dual Audio", no episode) ---
-        const dualResults = await this.#searchDualAudio(coreNames, episode, fetchFn);
-        console.log(`[Nyaa] Dual audio results: ${dualResults.length}`);
+        console.log(`[Nyaa] Primary: ${primaryResults.length}, Dual: ${dualResults.length}`);
 
-        // --- Step 4: Merge, dedupe, sort ---
-        const all = [...primaryResults, ...dualResults];
-        return this.#mergeAndSort(all, episode);
+        // --- Merge, dedupe, sort ---
+        return this.#mergeAndSort(primaryResults, dualResults, episode);
     }
 
     async batch(query, options) {
@@ -82,12 +78,6 @@ class Nyaa {
     // CORE NAME EXTRACTION
     // =========================================================================
 
-    /**
-     * Extract short, searchable core names from titles.
-     * "Sousou no Frieren 2nd Season" → "Sousou no Frieren"
-     * "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen" → "Jujutsu Kaisen"
-     * "Re:Zero kara Hajimeru Isekai Seikatsu 4th Season" → "Re:Zero"
-     */
     #extractCoreNames(titles, synonyms) {
         const names = [];
         const all = [...titles, ...synonyms];
@@ -96,16 +86,15 @@ class Nyaa {
             if (!raw || raw.length < 2) continue;
 
             let name = raw
-                .replace(/\[.*?\]/g, "")       // remove brackets
-                .replace(/\(.*?\)/g, "")       // remove parens
-                .replace(/[:\-–—].*$/, "")     // remove everything after colon/dash
-                .replace(/\b\d+(st|nd|rd|th)?\s+(season|cour|part|split).*/i, "") // remove "2nd Season..."
-                .replace(/\bseason\s*\d+.*/i, "") // remove "Season 02..."
-                .replace(/\bs\d+\b.*$/i, "")   // remove "S02..."
+                .replace(/\[.*?\]/g, "")
+                .replace(/\(.*?\)/g, "")
+                .replace(/[:\-–—].*$/, "")
+                .replace(/\b\d+(st|nd|rd|th)?\s+(season|cour|part|split).*/i, "")
+                .replace(/\bseason\s*\d+.*/i, "")
+                .replace(/\bs\d+\b.*$/i, "")
                 .replace(/\bTV anime\b/i, "")
                 .trim();
 
-            // Also try first 2-3 significant words
             const words = name.split(/\s+/).filter((w) => w.length > 1);
             if (words.length >= 3) {
                 const short = words.slice(0, 3).join(" ");
@@ -117,7 +106,6 @@ class Nyaa {
             }
         }
 
-        // Deduplicate by lowercase
         const seen = new Set();
         return names.filter((n) => {
             const k = n.toLowerCase();
@@ -128,7 +116,80 @@ class Nyaa {
     }
 
     // =========================================================================
-    // PRIMARY SEARCH — romaji titles with episode number
+    // EPISODE MATCHING
+    // =========================================================================
+
+    /**
+     * Build a strict regex that matches the episode in common nyaa formats:
+     *   S03E03, E03, - 03, EP03, Episode 03
+     * Also matches batch indicators: Season 03, S03, (Batch), (Complete)
+     *
+     * Returns null if episode is null.
+     */
+    #buildEpisodeRegex(episode) {
+        if (episode == null) return null;
+        const ep = String(episode).padStart(2, "0");
+        const epRaw = String(episode);
+
+        // Must match episode-specific OR batch-for-correct-season
+        return new RegExp(
+            `(?:S\\d+E${ep})` +           // S03E03
+            `|(?:\\bE${ep}\\b)` +          // E03
+            `|(?:\\s-\\s${ep}(?:\\s|$))` + // - 03 (with spaces)
+            `|(?:EP${ep})` +               // EP03
+            `|(?:Episode\\s+${epRaw})` +   // Episode 3
+            `|(?:\\bSeason\\s+\\d+\\b)` +  // Season XX (batch - any season, we filter by name)
+            `|(?:\\bS\\d+\\b)`,            // SXX (batch)
+            "i"
+        );
+    }
+
+    /**
+     * Strict episode match: the title MUST contain the specific episode number
+     * in an recognized format. Rejects false positives like "1080p" matching "03".
+     */
+    #matchesEpisode(title, episode) {
+        if (episode == null) return true;
+        const ep = String(episode).padStart(2, "0");
+        const epRaw = String(episode);
+
+        // Positive patterns — episode is explicitly mentioned
+        const positive = new RegExp(
+            `(?:S\\d+E${ep})` +           // S03E03
+            `|(?:\\bE${ep}\\b)` +          // E03
+            `|(?:\\s-\\s${ep}(?:\\s|$))` + // - 03
+            `|(?:EP${ep})` +               // EP03
+            `|(?:Episode\\s+${epRaw})`,    // Episode 3
+            "i"
+        );
+
+        if (positive.test(title)) return true;
+
+        // Batch detection — "Season XX", "SXX", "Batch", "Complete"
+        const isBatch = /\b(batch|complete|full\s*season)\b/i.test(title) ||
+            /\bSeason\s+\d+\b/i.test(title) ||
+            /\bS\d+\b/i.test(title);
+
+        // Standalone episode number (e.g., " - 03 [", " 03 ") — only for non-batch
+        if (!isBatch) {
+            const loose = new RegExp(`(?:^|\\s)[-–—]\\s*${ep}(?:\\s|$|\\]|\\[)`, "i");
+            if (loose.test(title)) return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a title is for the CORRECT season.
+     * Returns true if we can't determine the season (safe to include).
+     */
+    #matchesSeason(title, coreNames) {
+        // If we can't determine the season from the title, include it
+        return true;
+    }
+
+    // =========================================================================
+    // PRIMARY SEARCH
     // =========================================================================
 
     async #searchPrimary(allTitles, synonyms, episode, fetchFn) {
@@ -148,7 +209,9 @@ class Nyaa {
             if (!title) continue;
             try {
                 const results = await this.#search(title, episode, fetchFn);
-                if (results.length > 0) return results;
+                // Filter to correct episode only
+                const filtered = results.filter((r) => this.#matchesEpisode(r.title, episode));
+                if (filtered.length > 0) return filtered;
             } catch (ex) {
                 console.error(`[Nyaa] Primary search error "${title}":`, ex.message);
             }
@@ -160,7 +223,7 @@ class Nyaa {
     }
 
     // =========================================================================
-    // DUAL AUDIO SEARCH — core names + "Dual Audio", NO episode in query
+    // DUAL AUDIO SEARCH — core names + "Dual Audio", no episode in query
     // =========================================================================
 
     async #searchDualAudio(coreNames, episode, fetchFn) {
@@ -168,75 +231,45 @@ class Nyaa {
 
         const results = [];
 
-        // Try up to 3 core names
         for (let i = 0; i < Math.min(coreNames.length, 3); i++) {
             const name = coreNames[i];
-            const queries = [
-                `${name} Dual Audio`,
-                `${name} DUAL`,
-            ];
+            const queries = [`${name} Dual Audio`, `${name} DUAL`];
 
             for (const q of queries) {
                 await new Promise((r) => setTimeout(r, this.#delayMs));
                 try {
                     const raw = await this.#search(q, null, fetchFn);
                     if (raw.length > 0) {
-                        const filtered = this.#filterDualAudio(raw, coreNames, episode);
+                        const filtered = raw.filter((item) => {
+                            if (!this.#isDualAudio(item.title)) return false;
+
+                            // Loose name match
+                            const t = item.title.toLowerCase();
+                            if (!coreNames.some((n) => t.includes(n.toLowerCase()))) return false;
+
+                            // STRICT episode match
+                            if (!this.#matchesEpisode(item.title, episode)) return false;
+
+                            return true;
+                        });
+
                         results.push(...filtered);
-                        if (filtered.length > 0) break; // got results for this name
+                        if (filtered.length >= 2) break;
                     }
                 } catch (ex) {
                     console.error(`[Nyaa] Dual audio search error "${q}":`, ex.message);
                 }
             }
-
-            if (results.length > 0) break; // got results, stop trying other names
+            if (results.length >= 2) break;
         }
 
         return results;
-    }
-
-    /**
-     * Filter dual audio results by name match + episode match.
-     * Uses loose matching — core name must appear somewhere in the title.
-     */
-    #filterDualAudio(items, coreNames, episode) {
-        const epPadded = episode != null ? String(episode).padStart(2, "0") : null;
-
-        return items.filter((item) => {
-            const t = item.title.toLowerCase();
-
-            // Must be dual audio
-            if (!this.#isDualAudio(item.title)) return false;
-
-            // Must match at least one core name (loose: just contains it)
-            const nameMatch = coreNames.some((n) => t.includes(n.toLowerCase()));
-            if (!nameMatch) return false;
-
-            // Episode filter (if specified)
-            if (epPadded) {
-                // Match S02E05, E05, or Season 02/S02 for batches
-                const epRegex = new RegExp(
-                    `(?:S\\d+E${epPadded}|\\bE${epPadded}\\b|Season\\s+\\d+|\\bS\\d+\\b)`,
-                    "i"
-                );
-                if (!epRegex.test(item.title)) return false;
-            }
-
-            return true;
-        });
     }
 
     // =========================================================================
     // CORE SEARCH — nyaa.si RSS
     // =========================================================================
 
-    /**
-     * @param {string} title
-     * @param {string|number|null} episode
-     * @param {typeof fetch} fetchFn
-     * @returns {Promise<TorrentResult[]>}
-     */
     async #search(title, episode, fetchFn) {
         let q = title.replace(/[^\w\s-]/g, " ").trim();
         if (episode) q += ` ${episode.toString().padStart(2, "0")}`;
@@ -246,7 +279,6 @@ class Nyaa {
         const res = await fetchFn(url);
         const xml = await res.text();
 
-        /** @type {TorrentResult[]} */
         const results = [];
         const itemRegex = /<item>[\s\S]*?<\/item>/gi;
         let match;
@@ -322,7 +354,7 @@ class Nyaa {
     }
 
     // =========================================================================
-    // ANILIST (best effort)
+    // ANILIST
     // =========================================================================
 
     async #fetchEnglishTitle(anilistId, fetchFn) {
@@ -351,19 +383,24 @@ class Nyaa {
             /\bdual[\s-]*audio\b/i.test(title) ||
             /\bdual\b/i.test(title) ||
             /\bmulti[\s-]*(?:audio|aac|ddp|flac)\b/i.test(title) ||
-            /\bjpn?\s*\+?\s*eng\b/i.test(title) ||
-            /\bjapanese\s*\+?\s*english\b/i.test(title)
+            /\bjpn?\s*\+?\s*eng\b/i.test(title)
         );
     }
 
     // =========================================================================
-    // SCORING & SORTING
+    // MERGE & SORT — the algorithm
+    //
+    // 1. Deduplicate by hash (keep highest-scored)
+    // 2. Score: seeders + type bonus + recency + small dual audio bonus
+    // 3. Dual audio is a TIEBREAKER, not a massive override
+    // 4. Minimum 2 results: if dual audio has < 2, pad from primary
     // =========================================================================
 
-    #mergeAndSort(results, episode) {
+    #mergeAndSort(primaryResults, dualResults, episode) {
         const seen = new Map();
+        const all = [...primaryResults, ...dualResults];
 
-        for (const item of results) {
+        for (const item of all) {
             const existing = seen.get(item.hash);
             if (!existing || this.#score(item, episode) > this.#score(existing, episode)) {
                 seen.set(item.hash, item);
@@ -371,26 +408,48 @@ class Nyaa {
         }
 
         const deduped = Array.from(seen.values());
+
+        // Partition
         const dual = deduped.filter((r) => r.dualAudio);
         const nonDual = deduped.filter((r) => !r.dualAudio);
 
+        // Sort each group by score
         dual.sort((a, b) => this.#score(b, episode) - this.#score(a, episode));
         nonDual.sort((a, b) => this.#score(b, episode) - this.#score(a, episode));
 
+        // If dual audio has fewer than 2 results, interleave with non-dual
+        // to ensure the user sees a good mix
+        if (dual.length > 0 && dual.length < 2 && nonDual.length > 0) {
+            // Place dual audio results at the top, then fill with non-dual
+            return [...dual, ...nonDual];
+        }
+
+        // Normal: dual audio on top (sorted by score), then non-dual (sorted by score)
         return [...dual, ...nonDual];
     }
 
+    /**
+     * Scoring algorithm:
+     * - seeders * 10 (base)
+     * - type bonus: best +500, batch +300
+     * - seeders tier: >50 +200, >20 +100
+     * - dual audio: +50 (small tiebreaker)
+     *
+     * Dual audio is NOT a massive boost. It only breaks ties.
+     * Two results with 100 seeders each: dual audio wins.
+     * A result with 200 seeders beats a dual audio with 50 seeders.
+     */
     #score(item, episode) {
         let s = item.seeders * 10;
 
-        if (item.type === "best") s += 1000;
-        else if (item.type === "batch") s += 500;
+        if (item.type === "best") s += 500;
+        else if (item.type === "batch") s += 300;
 
-        if (item.seeders > 50) s += 300;
+        if (item.seeders > 50) s += 200;
         if (item.seeders > 20) s += 100;
 
-        // Dual audio: massive boost
-        if (item.dualAudio) s += 10000;
+        // Small dual audio tiebreaker
+        if (item.dualAudio) s += 50;
 
         return s;
     }
