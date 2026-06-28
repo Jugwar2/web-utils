@@ -3,7 +3,7 @@
     "name": "Web Utils",
     "id": "jugwar2.web.utils",
     "manifestVersion": 2,
-    "version": "1.7.0",
+    "version": "1.8.0",
     "type": "torrent",
     "accuracy": "medium",
     "updatePeers": true,

@@ -148,13 +148,22 @@ class Nyaa {
             try {
                 const dualResults = await this.#search(
                     variant + " Dual Audio",
-                    episode,
-                    options,
+                    null,  // no episode — uploaders use SXXEXX format
+                    false,
                 );
-                // Only keep results that actually match this anime
+                // Filter: must match this anime AND this episode
                 const filtered = dualResults.filter(item => {
                     const t = item.title.toLowerCase();
-                    return matchKeywords.some(kw => t.includes(kw));
+                    const matchesAnime = matchKeywords.some(kw => t.includes(kw));
+                    if (!episode) return matchesAnime;
+                    // Match episode in various formats: " - 03", "E03", "S03E03", " 03 "
+                    const ep = String(episode);
+                    const epPadded = ep.padStart(2, "0");
+                    const epRegex = new RegExp(
+                        `(?:[-\\sE]${epPadded}|S\\d+E${epPadded}|\\b${epPadded}\\b)`,
+                        "i"
+                    );
+                    return matchesAnime && epRegex.test(item.title);
                 });
                 if (filtered.length > 0) {
                     allResults.push(...filtered);
@@ -246,11 +255,12 @@ class Nyaa {
     /**
      * @param {string} title
      * @param {string|number|null} [episode]
+     * @param {boolean} [appendEpisode=true]
      * @returns {Promise<TorrentResult[]>}
      */
-    async #search(title, episode) {
+    async #search(title, episode, appendEpisode = true) {
         let query = title.replace(/[^\w\s-]/g, " ").trim();
-        if (episode) query += ` ${episode.toString().padStart(2, "0")}`;
+        if (episode && appendEpisode) query += ` ${episode.toString().padStart(2, "0")}`;
 
         const url = this.#base + encodeURIComponent(query);
 
