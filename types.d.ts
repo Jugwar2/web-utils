@@ -38,4 +38,5 @@ interface TorrentResult {
     size: number; // size in bytes
     date: Date; // date the torrent was uploaded
     type?: "batch" | "best" | "alt";
+    dualAudio?: boolean; // whether the torrent contains dual audio tracks
 }

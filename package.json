@@ -1,6 +1,6 @@
 {
     "name": "hayase-nyaa",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "Nyaa.si search extension for Hayase",
     "main": "hayase/index.json",
     "author": "neko581",

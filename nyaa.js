@@ -229,6 +229,15 @@ class Nyaa {
 
             let type = "alt";
 
+            // Detect dual audio
+            const isDualAudio =
+                /\[.*dual.*audio.*\]/i.test(titleVal) ||
+                /\(.*dual.*audio/i.test(titleVal) ||
+                /\bdual\b/i.test(titleVal) ||
+                /\bmulti\b.*(?:audio|aac|ddp|flac)/i.test(titleVal) ||
+                /jpn?\+eng/i.test(titleVal) ||
+                /japanese\s*\+?\s*english/i.test(titleVal);
+
             // 1. Remakes are almost always lowest priority
             if (isRemake) {
                 type = "alt";
@@ -280,6 +289,7 @@ class Nyaa {
                     : new Date(),
                 accuracy: "medium",
                 type,
+                dualAudio: isDualAudio,
             });
         }
 
@@ -349,6 +359,18 @@ class Nyaa {
 
         if (item.seeders > 50) score += 300;
         if (item.seeders > 20) score += 100;
+
+        // Boost dual audio torrents
+        if (
+            /\[.*dual.*audio.*\]/i.test(item.title) ||
+            /\(.*dual.*audio/i.test(item.title) ||
+            /\bdual\b/i.test(item.title) ||
+            /\bmulti\b.*(?:audio|aac|ddp|flac)/i.test(item.title) ||
+            /jpn?\+eng/i.test(item.title) ||
+            /japanese\s*\+?\s*english/i.test(item.title)
+        ) {
+            score += 200;
+        }
 
         return score;
     }

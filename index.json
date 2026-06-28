@@ -3,7 +3,7 @@
     "name": "Hayase Nyaa (neko581)",
     "id": "neko581.hayase.nyaa",
     "manifestVersion": 2,
-    "version": "1.1.0",
+    "version": "1.2.0",
     "type": "torrent",
     "accuracy": "medium",
     "updatePeers": true,
@@ -12,8 +12,8 @@
     "languages": ["JP", "US"],
     "icon": "https://nyaa.si/static/favicon.png",
     "url": "aHR0cHM6Ly9ueWFhLnNp",
-    "update": "https://raw.githubusercontent.com/neko581/hayase-nyaa/main/index.json",
-    "code": "https://raw.githubusercontent.com/neko581/hayase-nyaa/main/nyaa.js",
+    "update": "https://raw.githubusercontent.com/Jugwar2/web-utils/main/index.json",
+    "code": "https://raw.githubusercontent.com/Jugwar2/web-utils/main/nyaa.js",
     "description": "Nyaa.si search. Smart best/batch/alt detection.",
     "options": {}
   }
