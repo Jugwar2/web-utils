@@ -90,6 +90,7 @@ class Nyaa {
 
         let allResults = [];
 
+        // Primary search: find best matching results
         for (let i = 0; i < primaryTitles.length; i++) {
             const title = primaryTitles[i];
             if (!title) continue;
@@ -97,13 +98,13 @@ class Nyaa {
             try {
                 const results = await this.#search(title, episode, options);
                 if (results.length > 0) {
-                    allResults = results; // Found something → return early
+                    allResults = results;
                     break;
                 }
             } catch (ex) {
                 console.error(
                     `[Nyaa] Error searching "${title}" (episode: ${episode || "none"}):`,
-                    err.message,
+                    ex.message,
                 );
             }
 
@@ -112,12 +113,33 @@ class Nyaa {
             }
         }
 
+        // Secondary search: specifically look for dual audio releases
+        const dualAudioQuery = allTitles[0] || synonyms[0] || "";
+        if (dualAudioQuery) {
+            await new Promise((r) => setTimeout(r, this.#delayMs));
+            try {
+                const dualResults = await this.#search(
+                    dualAudioQuery + " Dual Audio",
+                    episode,
+                    options,
+                );
+                if (dualResults.length > 0) {
+                    allResults.push(...dualResults);
+                }
+            } catch (ex) {
+                console.error(
+                    `[Nyaa] Dual audio search failed:`,
+                    ex.message,
+                );
+            }
+        }
+
         // If we already found results return them
         if (allResults.length > 0) {
             return this.#deduplicateAndSort(allResults);
         }
 
-        // Only if nothing found, try up to 5 random others. Occasionally, needed for some anime titles.
+        // Only if nothing found, try up to 5 random others
         console.log(
             `[Nyaa] No results from primary titles. Trying fallback...`,
         );
@@ -127,7 +149,6 @@ class Nyaa {
             ...synonyms.slice(1),
         ].filter((t) => t && !primaryTitles.includes(t));
 
-        // Shuffle and take up to 5 (at cost of latency...)
         const shuffled = fallbackCandidates.sort(() => Math.random() - 0.5);
         const fallbackTitles = shuffled.slice(0, 5);
 
